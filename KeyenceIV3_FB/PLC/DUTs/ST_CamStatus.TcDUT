@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <DUT Name="ST_CamStatus" Id="{00ae0b7b-4deb-4083-bc1d-fc3fc75e1694}">
+    <Declaration><![CDATA[TYPE ST_CamStatus :
+STRUCT
+	
+sStatusMessage :STRING(255);
+
+a	:BYTE;		//Busy 
+b	:BYTE;		//Reserved by system
+c	:BYTE;		//Image capture (0:stopped, 1:imaging)
+d	:BYTE;		//SD card (0:Not identified, 1:identified)
+e	:BYTE;		//insufficent free space on SD card (0:None, 1:Insufficient free space [100 MB or less] on SD card error occurring)
+f	:BYTE;		//warnig(0: None, 1:warning occuring) 	[WR]
+g	:BYTE;		//Error(0:none, 1:error occuring)		[RER]
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

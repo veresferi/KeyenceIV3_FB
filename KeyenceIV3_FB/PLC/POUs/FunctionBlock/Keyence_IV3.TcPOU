@@ -1,0 +1,1418 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="Keyence_IV3" Id="{6af30915-fe67-49cd-af31-921ca69f380c}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK Keyence_IV3
+
+(* necessary libraries:
+
+Beckhoff_ERROR_Code_Translator
+Tc2_Standard
+Tc2_System
+Tc2_TcpIp
+Tc2_Utilities
+Tc3_Module*)
+
+
+
+
+VAR_INPUT
+	
+	bEnable:BOOL;		(*If Enbale = True than connection starts, if =0 than Disconnection starts*)
+	bTrigger:BOOL;		(*If this variable is TRUE while bReady is active it will triggers the Camera*)
+	sCameraIP:STRING;			// IP number of the IV3 Camera
+	iCameraPort:UDINT;			// port for IV3 camera
+	iTimeOut: INT :=45; (* Time out for connection in milisecounds, default setup is 45s*)
+	bResetERROR:BOOL;			
+	iProgramNumber : UINT;		// to select the camera job
+	
+
+END_VAR
+VAR_OUTPUT
+	
+	bReady:BOOL; 		(* is 1 if block is ready to work and not busy*)
+	bERROR:BOOL;		(*Activated if any ERROR occure during the process*)
+	sERROR:STRING;		// error string
+	sStatus:STRING;		//status
+	sReadingTime:STRING;	//Reading time
+	iActiveProgramNumber :UINT; //job number used by IV3 camera
+	bOperationStatus :BOOL; //You can check the operating status (Run or Program), 0:Program, 1:Run)
+	stResult: ST_IV3Result;
+	bFinished :BOOL;
+
+END_VAR
+VAR
+	
+
+// function block for TCP/IP connection
+	FB_SocketConnect:FB_SocketConnect;
+	FB_SocketSend:FB_SocketSend;
+	FB_SocketClose:FB_SocketClose;
+	FB_SocketReceive:FB_SocketReceive;
+	FB_SocketCloseAll:FB_SocketCloseAll;
+//----------------------------------------- 	
+	FB_ResultStruct: FB_ResultStructure;
+	fbProcessCameraStatus: FB_ProcessCameraStatus;
+	sStringToBeSend: STRING(255);   // String to send IV3 
+	RxBuffer:ARRAY[0..1000] OF BYTE; //Memory area for the buffer
+	sStringFromReader:T_MaxString;	//String received from IV3
+//--------------------------------------------------	
+	
+	iStepTCPIP :INT;				// stepsequence for TCP/IP handling
+	iStepCommands :E_Commands;		// stepsequence for Keyence commands
+	bConnected : BOOL;				// Connected to Keyence
+	iRetry :INT;					//Retry condition check
+	iMaxRetry:INT :=5;					//Max number of Retry
+	iNumberOfReconection :INT;				// how many reconnection tried happened
+	bReadyToSendCommand	:BOOL;			// Signal for Command sequence, ready to send command
+	bHandShake: BOOL;					// HandShake between the two sequences	iStepCommand write it allways 'TRUE', iStepTCPIP write it allways 'FALSE' if next step is requested
+	bDisconnect: BOOL;					//Start disconnection from socket
+	bInternalEnable :BOOL;					//Enable function block internally what will be enabled after reset
+	bResetDone :BOOL:=TRUE;
+	tonReadingTime: TON;				//measure time of triggering and receiving response
+	tonBusyStatus: TON;					//timeout for Status reading Busy
+	
+	
+	
+	
+	rsTriggerDetected :RS;			//to detect rising edge of trigger input
+	rsConnectBusy, rsSendBusy, rsReceiveBusy, rsDisconnectBusy :RS;		//detect busy signals in step mode
+	
+	// set information for Time Setting
+		sFormattedTime : STRING(255);			//Storing formated time
+		bSynced :BOOL :=FALSE;
+		
+		fbGetSystemTime	: FB_LocalSystemTime;
+		stSystemTime :	TIMESTRUCT;
+		
+	sTemp: T_MaxString;		//use this temp variable to create string functions
+	iStepTCPIPBeforeFailure: INT;				// contains the last step number before jumps to failure handling
+	iStepCommandsBeforeFailure :INT; 			//Contains the last step number befor jumps to failure handling
+	iStepArchiveCommands :INT;					// previous step
+	iStepArchiveTCPIP:INT;						//previous step
+	sStatusTCPIP : STRING(255);					// status of state machine TCP/IP communictaion
+	sStatusCommand:STRING(255);					//status of state machine Command line
+	
+	tonStepTimeOut: TON;				//measure time for timout of Command sequence
+	tonStepTimeOut2: TON;				//measure time for TCP/IP sequence
+	aStepHistoryCommands: ARRAY [1..30] OF E_Commands;  //for testing shows Command sequence step history
+	aStepHistoryTCPIP: ARRAY [1..50]OF INT;				//for testing shows TCP/IP sequence step history
+	
+	bInitialized: BOOL;		//Camera Initialized
+	iLastResultID : UINT;
+	stCameraStatus :ST_CamStatus;					//to process Camera Status information with [SR] command
+	
+	
+	iTemp: INT;	
+	iTemp2:INT;	
+	bERRORStepTimeOut:BOOL;								// set if Command sequence step timeout occured
+	bERRORStepTimeOut2:BOOL;								// set if TCPIP sequence step timeout occured
+	bJump:BOOL;											// variable to jump to socket close
+	udintERRORCodeToBeTranslated: UDINT;
+	sTranslatedERRORCode: STRING;
+	sERROR_Translator: STRING;
+	Beckhoff_ERROR_Code_Translator:Beckhoff_ERROR_Code_Translator;
+	bSocketCloseRequested :BOOL;			//monitoring socket close 
+	
+	
+	bCommandInProgress : BOOL := FALSE; // Jelzi, hogy egy parancs folyamatban van
+	bReTriggerDueToMissingResultID:BOOL;	//Result ID was not correct, therefore retrigger the camera
+
+//------------------------------------	
+//Variables to have manual step mode for debugging
+	bDebugModeOn :BOOL;
+	bDontStepForward :BOOL;
+	bStepButton:BOOL;
+	bStepRequest:BOOL:=FALSE;	//internal trigger for stepping forward
+	
+//-----------------------------------	
+	
+	itest :UDINT;
+	btest	:BOOL;
+	rtReceiveBusy: INT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[tonReadingTime(PT:=T#10S);
+tonStepTimeOut(PT:= INT_TO_TIME(iTimeOut));				//set step timout to default 1s, this can be changed in every stepp if necessary
+tonStepTimeOut2(PT:=INT_TO_TIME(iTimeOut));							//set step timout to default 1s, this can be changed in every stepp if necessary
+tonBusyStatus(PT:=INT_TO_TIME(iTimeOut));
+
+rsTriggerDetected();
+rsTriggerDetected.SET:=bTrigger AND bReady;				//Trigger detected
+rsTriggerDetected.RESET1:=FALSE;
+
+
+rsConnectBusy(set:=FB_SocketConnect.bBusy);
+rsConnectBusy.RESET1:=FALSE;
+rsSendBusy(set:=FB_SocketSend.bBusy);
+rsSendBusy.RESET1:=FALSE;
+rsReceiveBusy(set:=FB_SocketReceive.bBusy);
+rsReceiveBusy.RESET1:=FALSE;
+rsDisconnectBusy(set:=FB_SocketClose.bBusy);
+rsDisconnectBusy.RESET1:=FALSE;
+
+
+//Reset Error from main program
+IF bResetERROR THEN
+	
+		bInternalEnable:=FALSE;
+	(* Clear all variable, and memory*)
+		MEMSET(ADR(RxBuffer),0,SIZEOF(RxBuffer));
+		MEMSET(ADR(sStringFromReader),0,SIZEOF(sStringFromReader));
+		sStringFromReader:='';
+		sStringToBeSend:='';
+		bConnected:=FALSE;
+		bDisconnect:=FALSE;
+		sERROR:='';
+		bERROR:=FALSE;
+		iStepTCPIPBeforeFailure:=0;
+		iStepCommandsBeforeFailure:=0;
+		bSynced:=FALSE;
+		bReadyToSendCommand:=FALSE;
+		bHandShake:=FALSE;
+		bReady:=FALSE;
+		bFinished:=FALSE;
+		bConnected:=FALSE;
+		iTemp:=0;
+		iTemp2:=0;
+		bJump:=FALSE;
+		iRetry:=0;
+	iStepCommands:=0;	
+	iStepTCPIP:=0; 
+	tonStepTimeOut.IN:=FALSE;
+	tonStepTimeOut2.IN:=FALSE;
+	sStatus:='Initialization after Error Reset';
+	sStatusCommand:='Initialization after Error Reset';
+	sStatusTCPIP:='Initialization after Error Reset';
+	bERRORStepTimeOut:=FALSE;
+	bERRORStepTimeOut2:=FALSE;
+	udintERRORCodeToBeTranslated:=0;
+	bCommandInProgress := FALSE;
+	bReTriggerDueToMissingResultID:=FALSE;
+	iNumberOfReconection:=0;	
+	
+	rsTriggerDetected.RESET1:=TRUE;
+	rsConnectBusy.RESET1:=TRUE;
+	rsSendBusy.RESET1:=TRUE;
+	rsReceiveBusy.RESET1:=TRUE;
+	rsDisconnectBusy.RESET1:=TRUE;
+	
+	MEMSET(ADR(FB_SocketConnect.hSocket.handle),0,SIZEOF(FB_SocketConnect.hSocket.handle));		//re-initialize sockets 	
+	MEMSET(ADR(FB_SocketConnect.hSocket.localAddr),0,SIZEOF(FB_SocketConnect.hSocket.localAddr));
+	MEMSET(ADR(FB_SocketConnect.hSocket.remoteAddr),0,SIZEOF(FB_SocketConnect.hSocket.remoteAddr));
+		IF bResetDone THEN
+	    		bResetERROR:=FALSE;
+		END_IF
+	
+ELSIF bEnable AND NOT bInternalEnable THEN
+	bInternalEnable := TRUE;
+		
+END_IF
+
+IF NOT bEnable THEN
+    bInitialized:=FALSE;
+END_IF
+
+RingBufferCommands();		//for debugging record sequence steps
+
+TimeoutStepSequenceCommands();	// timeout handling of the command sequence
+
+RingBufferTCPIP();
+
+TimeoutStepSequenceTCPIP();
+
+IF bInternalEnable and NOT bDontStepForward THEN			//Enable internally after reset
+
+
+CASE iStepCommands OF
+
+E_Commands.WaitForStart : 	sStatusCommand:='Wait For Start';
+
+												IF bEnable AND bConnected AND NOT bERROR THEN
+													iStepCommands:=E_Commands.ReadError;
+												END_IF
+								
+// Read out the ERROR CODE
+E_Commands.ReadError : 		sStatusCommand:='Read Error Code';
+
+												IF bReadyToSendCommand AND NOT bHandShake THEN
+													sStringToBeSend:='RER$0D';
+												bHandShake:=TRUE;									
+													iStepCommands:=E_Commands.ReadErrorAck;			
+												END_IF
+	
+// wait for readout error code
+E_Commands.ReadErrorAck:				 		IF NOT bHandShake AND left(sStringFromReader,3)='RER' THEN
+													sTemp:= Right(sStringFromReader,3);
+														IF STRING_TO_INT(sTemp)<>0 THEN
+															bError :=TRUE;
+															iStepCommandsBeforeFailure:= iStepCommands;
+															iStepCommands:=E_Commands.FailureHandling;									
+														
+														ELSIF NOT bHandShake THEN
+														    	bCommandInProgress := FALSE;
+															iStepCommands:=E_Commands.ReadOpMode;		
+														END_IF
+												ELSIF NOT bHandShake AND left(sStringFromReader,2)='ER' THEN
+															bError:=TRUE;
+															sERROR:=CONCAT('General error:',sStringFromReader);
+															iStepCommandsBeforeFailure:= iStepCommands;
+															iStepCommands:=E_Commands.FailureHandling;		
+												END_IF
+
+// Read out sensor operation mode (Program:0/RUN:1)
+E_Commands.ReadOpMode: 		sStatusCommand:='Read Operation mode';
+					
+												IF bReadyToSendCommand AND NOT bHandShake THEN
+													sStringToBeSend:='RM$0D';
+												bHandShake:=TRUE;
+													iStepCommands:=E_Commands.ReadOpModeAck;			
+												END_IF
+		
+// wait for operation mode answer
+E_Commands.ReadOpModeAck: 									sTemp:=right(sStringFromReader,1);
+											IF NOT bHandShake AND STRING_TO_INT(right(sStringFromReader,1))=1 THEN							
+														sStatusCommand:='Camera in RUN mode';
+														bOperationStatus:=TRUE;
+														bCommandInProgress := FALSE;														
+														iStepCommands:=E_Commands.TimeSync;
+														
+												ELSIF 	NOT bHandShake AND STRING_TO_INT(right(sStringFromReader,1))=0 THEN
+														bError :=TRUE;
+														bOperationStatus:=FALSE;
+														sERROR:='Camera is in Programing mode';
+														bCommandInProgress := FALSE;
+														iStepCommandsBeforeFailure:= iStepCommands;
+														iStepCommands:=E_Commands.FailureHandling;						
+												END_IF
+		
+
+// Initialization of the Camera settings - Sync IV3 time to PLC
+E_Commands.TimeSync: 		sStatusCommand:='Creating time sync command';
+							fbGetSystemTime(bEnable:=TRUE,systemTime=>stSystemTime);
+							
+											IF fbGetSystemTime.bValid AND bReadyToSendCommand AND NOT bSynced AND iStepTCPIP<40 AND NOT bInitialized AND bConnected THEN
+												sFormattedTime:= F_GetSystemTimeAndDoFormating(stSystemTime);
+												sStringToBeSend:=CONCAT('TC,',CONCAT(sFormattedTime,'$0D'));
+											bHandShake:=TRUE;
+												iStepCommands:=E_Commands.TimeSyncAck;		
+											ELSIF bSynced AND NOT bInitialized THEN
+												iStepCommands:=E_Commands.StatusResultTransmission;		//jums to next init step		
+											ELSIF	bConnected AND bInitialized THEN
+												iStepCommands:=E_Commands.CheckLoadedJob;		//jumps to working
+											END_IF
+
+// wait for response for Time Snyc
+E_Commands.TimeSyncAck: 					IF NOT bHandShake AND NOT bInitialized AND sStringFromReader='TC' THEN
+												iStepCommands:=E_Commands.StatusResultTransmission;
+												bCommandInProgress := FALSE;
+												fbGetSystemTime.bEnable:=FALSE;
+												iTemp:=0;
+												bSynced:=TRUE;
+											ELSIF bInitialized THEN
+												iStepCommands:=E_Commands.CheckLoadedJob;	//jumps to working
+											ELSIF NOT bHandShake AND iTemp<3 THEN
+												iTemp:=iTemp+1;
+												iStepCommands:=E_Commands.ReadError;	//jumps to the begining
+												bCommandInProgress := FALSE;
+											ELSIF NOT bHandShake AND iTemp>3 THEN 
+												iTemp:=0;
+												bERROR:=TRUE;
+												sERROR:='Time Sync Failed';
+												iStepCommandsBeforeFailure:=iStepCommands;
+												iStepCommands:=E_Commands.FailureHandling;	
+											END_IF
+
+//Initialization of the Camera settings - Disable Automatic status result transmission
+E_Commands.StatusResultTransmission:		sStatusCommand:='Disable automatic status Result';
+		
+											IF bReadyToSendCommand AND iStepTCPIP<40 AND NOT bInitialized THEN
+												sStringToBeSend:='OE,0$0D';    //0=Disable, 1=Enabled 
+											bHandShake:=TRUE;
+												iStepCommands:=E_Commands.StatusResultTransmissionAck;
+											ELSIF bInitialized THEN
+												iStepCommands:=E_Commands.CheckLoadedJob;	//jumps to working			
+											END_IF
+// wait for response for Setup of Automatic status result
+E_Commands.StatusResultTransmissionAck: 		IF NOT bHandShake AND sStringFromReader='OE' THEN
+													iTemp:=0;
+													bCommandInProgress := FALSE;
+													iStepCommands:=E_Commands.StatusResultFormatChange;	
+												ELSIF NOT bHandShake THEN
+													iStepCommandsBeforeFailure:=iStepCommands; 
+													iStepCommands:=E_Commands.FailureHandling;
+												END_IF
+
+// Initialization of the Camera settings - Status Result output Format changing	
+E_Commands.StatusResultFormatChange: 	sStatusCommand:='Set output Formating';
+		
+											IF bReadyToSendCommand AND iStepTCPIP<40 AND NOT bInitialized THEN
+												sStringToBeSend:='OF,00$0D';  //00= Standard,02=Standard with multiple master registration enabled,01=Detailed, 03=Detailed with multiple master registration enabled
+											bHandShake:=TRUE;
+												iStepCommands:=E_Commands.StatusResultFormatChangeAck;
+											ELSIF bInitialized THEN
+												iStepCommands:=E_Commands.CheckLoadedJob;	//jumps to working	
+											END_IF
+	
+// wait for response for Setup of Status Result output Format changing
+E_Commands.StatusResultFormatChangeAck:		 	IF NOT bHandShake AND sStringFromReader='OF' THEN
+													iTemp:=0;
+													bCommandInProgress := FALSE;
+													iStepCommands:=E_Commands.ClearWarnings;	
+												ELSIF NOT bHandShake THEN
+													iStepCommandsBeforeFailure:=iStepCommands;
+													iStepCommands:=E_Commands.FailureHandling;														
+												END_IF
+
+//	Initialization of the Camera settings - Clear Warnings		
+E_Commands.ClearWarnings:		sStatusCommand:='Clear IV3 warnings';	
+		
+												IF bReadyToSendCommand AND iStepTCPIP<40 AND NOT bInitialized THEN
+													sStringToBeSend:='WC$0D';
+												bHandShake:=TRUE;
+													iStepCommands:=E_Commands.ClearWarningsAck;
+												ELSIF bInitialized THEN
+													iStepCommands:=E_Commands.CheckLoadedJob;	
+												END_IF	
+
+// wait for response for Clear Warnings
+E_Commands.ClearWarningsAck:									IF NOT bHandShake AND sStringFromReader='WC' THEN
+													iTemp:=0;
+													bCommandInProgress := FALSE;
+													iStepCommands:=E_Commands.CheckLoadedJob;
+												ELSIF NOT bHandShake THEN
+													iStepCommandsBeforeFailure:=iStepCommands;
+													iStepCommands:=E_Commands.FailureHandling;													
+												END_IF
+//Check if Loaded camera job is the right one for the actual recipe
+E_Commands.CheckLoadedJob:			sStatusCommand:='Check loaded camera job number';
+		
+											bFinished:=FALSE;
+											IF bReadyToSendCommand  AND iStepTCPIP<40 AND NOT rsTriggerDetected.Q1  THEN
+												sStringToBeSend:='PR$0D';
+											bHandShake:=TRUE;
+												
+												iStepCommands:=E_Commands.CheckLoadedJobAck;	
+											END_IF
+// wait for response for camera job number
+E_Commands.CheckLoadedJobAck:				IF NOT bHandShake AND 
+												sStringFromReader<>'' AND left(sStringFromReader,2)<>'ER' THEN
+												iTemp:=0;
+												bCommandInProgress := FALSE;
+												iStepCommands:=E_Commands.CompareJobNumbers;	
+											ELSIF NOT bHandShake THEN
+												iStepCommandsBeforeFailure:=iStepCommands;
+												iStepCommands:=E_Commands.FailureHandling;												
+											END_IF	
+					
+// Compare camera job numbers					
+E_Commands.CompareJobNumbers: 	sStatusCommand:='Compare Loaded Camera Program number';				
+		
+											IF iProgramNumber>=0 THEN
+												
+											iActiveProgramNumber:= STRING_TO_UINT(MID(sStringFromReader,3,FIND(sStringFromReader,',')+1));
+											
+												IF iProgramNumber<>iActiveProgramNumber THEN
+														iStepCommands:=E_Commands.LoadJob;  // load the right job
+												ELSE
+												    		bReady:=TRUE;
+														iStepCommands:=E_Commands.Trigger; // can do triggering
+														bInitialized:=TRUE;		
+												END_IF
+											ELSE 	
+													sERROR:='NO Camera program defined';
+													iStepCommandsBeforeFailure:=iStepCommands;
+													iStepCommands:=E_Commands.FailureHandling;	
+													
+											END_IF
+		
+// start camera program changing
+E_Commands.LoadJob:		sStatusCommand:='Change camera program';	
+				
+										IF bReadyToSendCommand AND iStepTCPIP<40 THEN
+											sStringToBeSend:=F_CreateStringForCameraProgramNumber(iProgramNumber);
+										bHandShake:=TRUE;
+											iStepCommands:=E_Commands.LoadJobAck;	
+										END_IF	
+		// wait for response for camera job number change
+E_Commands.LoadJobAck:				 	IF NOT bHandShake AND 
+											sStringFromReader='PW' THEN
+											bCommandInProgress := FALSE;
+											bReady:=TRUE;
+											iStepCommands:=E_Commands.Trigger;	
+										ELSIF NOT bHandShake THEN
+											CheckGeneralError();
+											iStepCommands:=E_Commands.LoadJob;
+											
+										END_IF	
+					
+//--------------------------------------------------------------------------------
+
+// DO the triggering of the camera to check product - -waiting for trigger signal from outside of the FB
+
+E_Commands.Trigger:		sStatusCommand:='Triggering IV3 camera job';
+																	
+										//bReady:=TRUE;
+										IF bReadyToSendCommand AND (rsTriggerDetected.Q1 OR bReTriggerDueToMissingResultID) AND iStepTCPIP<40 THEN
+												tonReadingTime.IN:=TRUE;
+												sStringToBeSend:='T1$0D';
+											bReTriggerDueToMissingResultID:=FALSE;	
+											bHandShake:=TRUE;
+											bReady:=FALSE;
+												iStepCommands:=E_Commands.TriggerAck;	
+										END_IF	
+// wait for response for Trigger
+E_Commands.TriggerAck:				 				
+										IF NOT bHandShake AND sStringFromReader='T1' THEN
+											IF NOT bDebugModeOn THEN
+												tonBusyStatus.IN:=TRUE;
+											END_IF	
+											rsTriggerDetected.RESET1:=TRUE;
+											bCommandInProgress := FALSE;
+											iStepCommands:=E_Commands.SensorStatusCheck;
+											iTemp:=0;	
+										ELSIF NOT bHandShake THEN
+										    	//bCommandInProgress := FALSE;
+											iStepCommands:=E_Commands.Trigger;
+											{warning 'Lekezelni a timeout-ot amin belül újra próálkozhat, különben a bCommandInProgress miatt megállhatunk itt}
+										END_IF							
+
+//----------------------------------------------------------------------------------
+//Wait for Judgemnet processing
+		//Sensor status check [SR]
+
+E_Commands.SensorStatusCheck:		sStatusCommand:='Check the busy status of camera';
+										
+									IF bReadyToSendCommand AND iStepTCPIP<40 THEN
+											sStringToBeSend:='SR$0D';
+										bHandShake:=TRUE;
+											iStepCommands:=E_Commands.SensorStatusCheckAck;
+									END_IF		
+// wait for response Status check										
+E_Commands.SensorStatusCheckAck:	sStatusCommand:='Wait for Camera Busy down';										
+													
+									IF NOT bCommandInProgress THEN
+											fbProcessCameraStatus(sStringFromReader:=sStringFromReader , stCameraStatus=>stCameraStatus );	
+										
+											IF NOT bHandShake AND sStringFromReader<>''AND NOT (left(sStringFromReader,2)='ER')AND LEN(sStringFromReader)>7 THEN
+												
+														(* Response example:  SR, 1, 0, 1, 1, 0, 0 [CR]
+											
+																[Response] SR , a , b , c , d , e , f , g [CR]
+																Parameters
+																			a BUSY (0 : OFF、1 : ON)
+																			b 0: Reserved by system
+																			c Image capture (0: Stopped, 1: Imaging)
+																			d	 SD card (0: Not identified, 1: Identified)
+																			e Insufficient free space on SD card (0: None, 1: Insufficient free space [100 MB or less] on SD card error occurring)
+																			f Warning (0: None, 1: Warning occurring) You can use the WR command (Page 6-17) to check the details of the warning.
+																			g Error (0: None, 1: Error occurring)You can use the RER command (Page 6-16)to check the details of the error*)
+																
+															IF stCameraStatus.a=0 AND stCameraStatus.g=0 THEN		//Busy is down can jump to result reading
+																tonBusyStatus.IN:=FALSE;
+																bCommandInProgress := FALSE;
+																iTemp:=0;				
+																iStepCommands:=E_Commands.ReadResult;
+															ELSIF stCameraStatus.a=1 AND NOT tonBusyStatus.Q THEN	
+																bCommandInProgress := FALSE;	
+																iStepCommands:=E_Commands.SensorStatusCheck;						//read again until busy is down within timeout
+																iTemp:=iTemp+1;	
+															ELSIF stCameraStatus.a=1 AND tonBusyStatus.Q THEN						//waits too long for busy down
+																	bERROR:=TRUE;
+																	sERROR:='Camera Judgement waits too long';
+																	tonBusyStatus.IN:=FALSE;
+																	iStepCommandsBeforeFailure:= iStepCommands;
+																	iStepCommands:=E_Commands.FailureHandling;
+																	
+															ELSIF stCameraStatus.f=1 THEN
+																	bCommandInProgress := FALSE;
+																	iStepCommands:=E_Commands.ClearWarnings;		//if warning is active go to warning celaring
+															ELSIF stCameraStatus.g=1 THEN
+																	bCommandInProgress := FALSE;
+																	iStepCommands:=E_Commands.ReadError;			//if error is active go to error reading														
+															END_IF		
+		
+											ELSIF NOT bHandShake THEN
+											   		 
+													iStepCommandsBeforeFailure:=iStepCommands;
+													iStepCommands:=E_Commands.FailureHandling;
+												CheckGeneralError();								
+											END_IF		
+										END_IF
+//--------------------------------------------------------------------------------------------
+// Reading the status Result	
+E_Commands.ReadResult:		sStatusCommand:='Reading camera result';
+		
+										IF bReadyToSendCommand AND iStepTCPIP<40 THEN
+												sStringToBeSend:='RT$0D';
+											bHandShake:=TRUE;
+												iStepCommands:=E_Commands.ReadResultAck;	
+										END_IF	
+// wait for response for IV3 to result reading
+E_Commands.ReadResultAck:				IF NOT bHandShake AND sStringFromReader<>''AND NOT (left(sStringFromReader,2)='ER') THEN
+											
+											FB_ResultStruct(sReceivedString:= sStringFromReader, stResult=> stResult);
+											stResult.sReceivedString:=sStringFromReader;		//store the raw result message
+											sReadingTime:=TIME_TO_STRING(tonReadingTime.ET);
+											tonReadingTime.IN:=FALSE;
+											bCommandInProgress := FALSE;
+											iTemp2:=iTemp2+1;
+												IF F_ContinousResultID(stResult.ResultID,iLastResultID) THEN
+													iLastResultID:=stResult.ResultID;
+													iTemp2:=0;
+													bReTriggerDueToMissingResultID:=FALSE;
+													bFinished:=TRUE;
+													iStepCommands:=E_Commands.CheckLoadedJob;			// jump back to waiting for triggering outside from the FB	but first check loaded camera job	
+												ELSIF 	iTemp2<3 THEN
+												    	sStatusCommand:='Trigger again due to wrong result ID';
+													iLastResultID:=stResult.ResultID;				//re trigger the camera to have a result with a correct ID
+													bReTriggerDueToMissingResultID:=TRUE;
+													iStepCommands:=E_Commands.Trigger;
+													
+												ELSE
+													bERROR:=TRUE;
+													iTemp2:=0;
+													sERROR:='Missing or out-of-sequence result ID';
+													iStepCommandsBeforeFailure := iStepCommands;
+													iStepCommands := E_Commands.FailureHandling;
+
+												END_IF
+	
+												
+												
+											ELSIF NOT bHandShake AND left(sStringFromReader,2)='ER'THEN
+												bError:=TRUE;
+												sERROR:=CONCAT('General error:',sStringFromReader);
+												iStepCommandsBeforeFailure:= iStepCommands;
+												iStepCommands:=E_Commands.FailureHandling;
+												
+											ELSIF NOT bHandShake THEN
+											iStepCommands:=E_Commands.ReadResult;			// retry receiving
+											{warning 'Lekezelni a timeout-ot amin belül újra próálkozhat, különben végtelen ciklusba várakozunk itt'}
+										END_IF					
+
+E_Commands.FailureHandling:		// FAILURE HANDLING
+								FailureHandlingCommands();	
+					
+END_CASE
+
+
+
+//---------------------------------------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------------------------------------
+
+
+
+CASE iStepTCPIP OF 
+
+0: 	 sStatusTCPIP:='Initilaization and waiting for Enable the Communication Function Block';  
+			bJump:=FALSE;
+			bConnected := FALSE;
+			FB_SocketConnect.bExecute:=FALSE;
+			FB_SocketReceive.bExecute:=FALSE;
+			FB_SocketSend.bExecute:=FALSE;
+			FB_SocketClose.bExecute:=FALSE;
+			FB_SocketCloseAll.bExecute:=FALSE;
+			
+			
+		IF bEnable AND NOT bResetERROR  AND NOT bERROR THEN
+			FB_SocketConnect.bExecute:=TRUE;	
+			iStepTCPIP :=10;
+		END_IF	
+
+10:   sStatusTCPIP:='Wait for conection Busy Up';    			
+			
+		IF (FB_SocketConnect.bBusy OR rsConnectBusy.Q1) AND NOT FB_SocketConnect.bError THEN
+			rsConnectBusy.RESET1:=TRUE;
+			FB_SocketConnect.bExecute:=FALSE;
+			iStepTCPIP:=20;
+		ELSIF FB_SocketConnect.bError THEN  
+			bConnected:=FALSE;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			udintERRORCodeToBeTranslated:=FB_SocketConnect.nErrId;
+			rsConnectBusy.RESET1:=TRUE;
+			iStepTCPIP:=1000;  
+		END_IF	
+		
+20:		sStatusTCPIP:='Wait for connection Busy Down';			
+			
+		IF	NOT FB_SocketConnect.bBusy AND NOT FB_SocketConnect.bError THEN
+			bConnected:=TRUE;
+			iNumberOfReconection:=iNumberOfReconection+1;
+			bReadyToSendCommand:=TRUE;
+			iStepTCPIP:=30;
+		ELSIF FB_SocketConnect.bError THEN
+			bERROR:=TRUE;
+			bConnected:=FALSE;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketConnect.nErrId);
+			iStepTCPIP:=1000; 
+		END_IF
+					
+30: 	sStatusTCPIP:= 'Connection oppened start sending a command';
+		
+		
+		
+		IF 	bHandShake AND sStringToBeSend<>'' AND NOT bCommandInProgress AND NOT bERROR THEN
+			bCommandInProgress:=TRUE;	
+			FB_SocketSend.bExecute:=TRUE;
+			iStepTCPIP:=40;
+			
+		ELSIF NOT bEnable OR bDisconnect THEN
+			iStepTCPIP:=200;
+		
+		ELSIF bHandShake AND sStringToBeSend<>'' AND bCommandInProgress AND iNumberOfReconection=0 THEN		 // command was already sent, wait for answer   
+			FB_SocketReceive.bExecute := TRUE;
+			iStepTCPIP := 60;
+			
+		ELSIF bHandShake AND bCommandInProgress AND iNumberOfReconection<>0 AND sStringToBeSend<>'' THEN			//resend command after reconnection
+			FB_SocketSend.bExecute:=TRUE;
+			iStepTCPIP:=40;	
+		
+		END_IF
+		
+40:		sStatusTCPIP:=' Wait for send busy up';
+		
+		IF (FB_SocketSend.bBusy OR rsSendBusy.Q1) AND NOT FB_SocketSend.bError THEN
+			FB_SocketSend.bExecute:=FALSE;
+			rsSendBusy.RESET1:=TRUE;
+			iStepTCPIP:=50;	
+		ELSIF FB_SocketSend.bError THEN
+			bERROR:=TRUE;
+			bCommandInProgress := FALSE;	
+			udintERRORCodeToBeTranslated:=FB_SocketSend.nErrId;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketSend.nErrId);
+			rsSendBusy.RESET1:=TRUE;
+			iStepTCPIP:=1000; 
+		END_IF
+
+		
+50:		sStatusTCPIP:='Wait for send Busy down';
+
+		IF NOT FB_SocketSend.bBusy AND NOT FB_SocketSend.bError THEN
+		
+			MEMSET(ADR(RxBuffer),0,SIZEOF(RxBuffer));	// Clear receive buffer
+			sStringFromReader:='';						//Delete readed String
+		
+			FB_SocketReceive.bExecute:=TRUE;
+			iStepTCPIP:=60;
+			
+		ELSIF FB_SocketSend.bError THEN
+			bERROR:=TRUE;
+			bCommandInProgress := FALSE;
+			udintERRORCodeToBeTranslated:=FB_SocketSend.nErrId;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketSend.nErrId);
+			iStepTCPIP:=1000;
+		END_IF	
+			
+60: 	sStatusTCPIP:='Wait for receive busy up';
+		
+		IF (FB_SocketReceive.bBusy OR rsReceiveBusy.Q1) AND NOT FB_SocketReceive.bError THEN
+		    	rsReceiveBusy.RESET1:=TRUE;
+			FB_SocketReceive.bExecute:=FALSE;
+			iStepTCPIP:=70;
+		ELSIF FB_SocketReceive.bError THEN
+			bERROR:=TRUE;
+			bCommandInProgress := FALSE;
+			udintERRORCodeToBeTranslated:=FB_SocketReceive.nErrId;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketReceive.nErrId);
+			rsReceiveBusy.RESET1:=TRUE;	
+			iStepTCPIP:=1000;
+		END_IF
+		
+70: 	sStatusTCPIP:='Wait for receive busy down';
+
+		IF NOT FB_SocketReceive.bBusy AND NOT FB_SocketReceive.bError THEN	
+			iStepTCPIP:=80;
+		ELSIF FB_SocketReceive.bError THEN
+			bERROR:=TRUE;
+			bCommandInProgress := FALSE;
+			udintERRORCodeToBeTranslated:=FB_SocketReceive.nErrId;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketReceive.nErrId);	
+			iStepTCPIP:=1000;
+		END_IF	
+
+80:		sStatusTCPIP:='Response received, check size of received data';
+
+		IF (FB_SocketReceive.nRecBytes > 0)	AND  (FB_SocketReceive.nRecBytes < 256)	THEN
+			MEMCPY (ADR(sStringFromReader), ADR(rxBuffer), FB_SocketReceive.nRecBytes);			// copy data to sTringFromReader
+			MEMSET (ADR(sStringFromReader)+ FB_SocketReceive.nRecBytes, 0,SIZEOF(sStringFromReader)- FB_SocketReceive.nRecBytes); // set the remaing space in the String to zero
+			sStringFromReader:= CleanString(sStringFromReader);
+			bCommandInProgress := FALSE;
+			iNumberOfReconection:=0;
+			iStepTCPIP:=100;
+		END_IF	
+
+	IF FB_SocketReceive.nRecBytes = 0 THEN
+			iStepTCPIP:=90;						// IF No data received then Try again
+	END_IF	
+		
+	IF FB_SocketReceive.nRecBytes >256 THEN
+	    		bERROR:=TRUE;
+	    		iStepTCPIPBeforeFailure:=iStepTCPIP;
+	    		sERROR:='Too much data received';
+	    		bCommandInProgress := FALSE;
+			iStepTCPIP:=1000;						// more than 256 bytes received from the Camera handle error
+	END_IF
+	
+90: 	sStatusTCPIP:='No data received from camera, Try again ';
+		
+		IF 	iRetry <=iMaxRetry AND NOT FB_SocketReceive.bBusy	THEN
+			
+			iRetry:=iRetry+1;
+			MEMSET(ADR(RxBuffer),0,SIZEOF(RxBuffer));	// Clear receive buffer
+			sStringFromReader:='';						//Delete readed String
+			FB_SocketReceive.bExecute:=TRUE;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			iStepTCPIP:=60;
+			
+		ELSIF iRetry>iMaxRetry AND NOT FB_SocketReceive.bBusy THEN
+			iStepTCPIPBeforeFailure:=iStepTCPIP;	
+			//bJump:=TRUE;
+			
+			//FB_SocketCloseAll.bExecute:=TRUE;		//start closing connection all sockets!!! olny for debuging	
+			FB_SocketClose.bExecute:=TRUE;
+			iRetry:=0;
+			iStepTCPIP:=200;							//jump to connection close to retry
+		ELSE
+			iRetry:=0;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			FB_SocketClose.bExecute:=TRUE;
+			iStepTCPIP:=1000; 
+			
+		END_IF
+100:	sStatusTCPIP:='Check if connection can be closed';	
+		
+		
+		
+		IF (NOT bERROR  OR NOT bResetERROR) AND bEnable AND NOT bDisconnect THEN
+			bHandShake:=FALSE;
+			bCommandInProgress := FALSE;
+			iStepTCPIP:=30;			//Jumps back to waiting for sending a command
+						
+		ELSIF bERROR OR bResetERROR OR NOT bEnable OR bDisconnect THEN
+			bReadyToSendCommand:=FALSE;
+			iStepTCPIP:=200;	
+		END_IF
+200:  	sStatusTCPIP:='Start Connection close';
+
+		
+		FB_SocketConnect.bExecute:=FALSE;
+		
+		IF NOT bSocketCloseRequested THEN
+		FB_SocketClose.bExecute:=TRUE;
+		bSocketCloseRequested:=TRUE;
+		END_IF
+		
+	sStatusTCPIP:='Waiting for disconnection busy UP';	
+		IF (FB_SocketClose.bBusy OR rsDisconnectBusy.Q1) THEN
+		rsDisconnectBusy.RESET1:=TRUE;
+		iStepTCPIP :=210;
+		END_IF
+		
+		//only for debuging - it will close all connections even other devices
+		IF bJump THEN
+			FB_SocketCloseAll.bExecute:=TRUE;
+		END_IF
+	
+210:	sStatusTCPIP:='Waiting for disconnection busy UP';
+
+	
+		IF bSocketCloseRequested AND NOT FB_SocketClose.bError THEN
+		    FB_SocketClose.bExecute:=FALSE;
+		iStepTCPIP :=220;
+		
+		ELSIF FB_SocketCloseAll.bBusy AND bJump THEN
+			iStepTCPIP :=220;
+		ELSIF FB_SocketClose.bError THEN
+			bERROR:=TRUE;
+			udintERRORCodeToBeTranslated:=FB_SocketReceive.nErrId;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketClose.nErrId);
+			iStepTCPIP:=1000;	
+		END_IF		
+		
+220:	sStatusTCPIP:='Wait for disconnection busy down';
+
+			bSocketCloseRequested:=FALSE;
+			MEMSET(ADR(FB_SocketConnect.hSocket.handle),0,SIZEOF(FB_SocketConnect.hSocket.handle));
+			MEMSET(ADR(FB_SocketConnect.hSocket.localAddr),0,SIZEOF(FB_SocketConnect.hSocket.localAddr));
+			MEMSET(ADR(FB_SocketConnect.hSocket.remoteAddr),0,SIZEOF(FB_SocketConnect.hSocket.remoteAddr));
+			
+		IF NOT FB_SocketCloseAll.bBusy AND NOT FB_SocketCloseAll.bError AND bJump THEN
+			bConnected:=FALSE;
+			iStepTCPIP :=0;			
+		END_IF
+
+ 		IF NOT FB_SocketClose.bBusy
+			AND NOT FB_SocketClose.bError AND NOT bJump AND
+				FB_SocketConnect.hSocket.handle=0 THEN
+				bConnected:=FALSE;	 
+												
+				iStepTCPIP :=0;		
+		ELSIF FB_SocketClose.bError AND NOT bJump THEN
+			bERROR:=TRUE;
+			udintERRORCodeToBeTranslated:=FB_SocketClose.nErrId;
+			iStepTCPIPBeforeFailure:=iStepTCPIP;
+			sERROR:= TO_STRING(FB_SocketClose.nErrId);
+			iStepTCPIP:=1000;
+	END_IF		
+
+		
+1000:	FailureHandlingTCPIP();
+		
+	
+		
+END_CASE
+
+END_IF
+
+// create status sring from the two statemachines individual state
+IF (LEN(sStatusCommand)+LEN(sStatusTCPIP))+1<=255 THEN
+        	sStatus:=CONCAT(sStatusCommand,';');
+	sStatus:=CONCAT(sStatus,sStatusTCPIP);
+ELSE	
+	sStatus:=CONCAT(sStatusCommand,';');
+	sStatus:=CONCAT(sStatus,LEFT(sStatusTCPIP,254-LEN(sStatusCommand)));
+END_IF
+		
+(*Connect to Reader *)
+FB_SocketConnect(
+	sSrvNetId:= ,
+	sRemoteHost:=sCameraIP ,
+	nRemotePort:=iCameraPort ,
+	bExecute:= ,
+	tTimeout:= INT_TO_TIME (iTimeOut) ,
+	bBusy=> ,
+	bError=> ,
+	nErrId=> ,
+	hSocket=> );
+
+(* Receive data from the reader*)
+
+FB_SocketReceive(
+	sSrvNetId:= ,
+	hSocket:=FB_SocketConnect.hSocket ,
+	cbLen:=SIZEOF(RxBuffer) ,
+	pDest:=ADR(RxBuffer) ,
+	bExecute:= ,
+	tTimeout:= INT_TO_TIME( iTimeOut) ,
+	bBusy=> ,
+	bError=> ,
+	nErrId=> ,
+	nRecBytes=> );
+
+(*Send data to reader*)
+FB_SocketSend(
+	sSrvNetId:= ,
+	hSocket:=FB_SocketConnect.hSocket ,
+	cbLen:=LEN(sStringToBeSend) ,
+	pSrc:=ADR(sStringToBeSend) ,
+	bExecute:= ,
+	tTimeout:= INT_TO_TIME (iTimeOut) ,
+	bBusy=> ,
+	bError=> ,
+	nErrId=> );
+
+(* Close connection*)
+FB_SocketClose(
+	sSrvNetId:= ,
+	hSocket:=FB_SocketConnect.hSocket ,
+	bExecute:= , 
+	tTimeout:=INT_TO_TIME (iTimeOut) ,
+	bBusy=> ,
+	bError=> ,
+	nErrId=> );
+	
+(*Close all connection*)
+FB_SocketCloseAll(
+	sSrvNetId:='',
+	bExecute:=,
+	tTimeout:=T#5S,
+	bBusy=>,
+	bError=>,
+	nErrid=>);
+	
+(*ERROR code translator*)
+Beckhoff_ERROR_Code_Translator(
+		udintERRORCodeToBeTranslated:=udintERRORCodeToBeTranslated ,
+		sFilePath:='C:\BeckhoffERRORCodes\' ,
+		bResetERROR:=bResetERROR ,
+		sTranslatedERRORCode=>sTranslatedERRORCode,
+		bERROR=>,
+		sERROR=>sERROR_Translator );
+		
+// Debug léptetés logika
+IF bDebugModeOn THEN
+    IF bStepButton AND NOT bStepRequest THEN
+        bStepRequest := TRUE; // Gombnyomásra engedélyez egy lépést
+    END_IF
+
+    IF bStepRequest THEN
+        bDontStepForward := FALSE; // Engedélyezett a lépés
+    ELSE
+        bDontStepForward := TRUE; // Várakozik a gombra
+    END_IF
+ELSE
+    bDontStepForward := FALSE; // Normál módban mindig engedélyezett
+    bStepRequest := FALSE;
+END_IF
+
+IF (iStepArchiveCommands<>iStepCommands OR iStepArchiveTCPIP<> iStepTCPIP ) AND bStepButton THEN
+    bStepButton:=FALSE;
+END_IF
+]]></ST>
+    </Implementation>
+    <Action Name="CheckGeneralError" Id="{e7205d91-aacd-46de-ab39-0baeaf8ada71}">
+      <Implementation>
+        <ST><![CDATA[IF left(sStringFromReader,2)='ER' THEN
+															bError:=TRUE;
+															sERROR:=CONCAT(sERROR, CONCAT('General error:',sStringFromReader));
+															iStepCommandsBeforeFailure:= iStepCommands;
+															iStepCommands:=E_Commands.FailureHandling;
+																		    //trigger disconnection if error occured
+															    IF bConnected THEN
+																    bDisconnect:=TRUE;			
+															    END_IF
+															
+END_IF															]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="FailureHandlingCommands" Id="{fa0c0a97-d498-453e-9c80-b41b7f776214}">
+      <Implementation>
+        <ST><![CDATA[
+bReady:=FALSE;
+
+CASE iStepCommandsBeforeFailure   OF		
+										
+	E_Commands.ReadErrorAck:			iTemp:= STRING_TO_INT(Right(sStringFromReader,3));			//Keyence Error Codes
+ 											
+											IF iTemp<=32 THEN 
+												sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- Program NO. xx corruption error');						
+											ELSIF iTemp=52 THEN
+												sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- Program switching error(on startup, externak input');
+											ELSIF iTemp=53 THEN
+													sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- Program switching error(on startup,Panel/PC/Network/Automatic Switching');
+											ELSIF iTemp=55 THEN
+													sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- Program switching error(in RUN status');
+											ELSIF iTemp=97 OR iTemp=98 OR iTemp=99 THEN
+													sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- Non Volatile memory error');	
+											ELSIF iTemp=95 OR iTemp=96 OR (iTemp>=100 AND iTemp<=128) THEN
+													sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- System error, error may have occured in the sensor');
+											ELSIF iTemp=79  THEN
+													sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- System error, No sensor head is connected to the amplifier');
+											ELSE	
+													sERROR:=CONCAT(CONCAT('Keyence error code:',Right(sStringFromReader,3)),
+																		'- unknown error');	
+											END_IF
+											bERROR:=TRUE;
+											bDisconnect:=TRUE;	
+											
+	E_Commands.ReadOpModeAck:							bDisconnect:=TRUE;							
+						
+											
+										
+	
+
+
+	E_Commands.TimeSyncAck: 							//Failed time sync
+													sERROR:=CONCAT(sStringToBeSend, 'Time Sync Failed');
+													bERROR:=TRUE;
+											//trigger disconnection if error occured
+											IF bConnected THEN
+												bDisconnect:=TRUE;			
+											END_IF
+	E_Commands.StatusResultTransmissionAck:			//Failed Automatic Result Transmission setup - retry 3 times								
+												IF iTemp<3 THEN
+													sERROR:='Automatic status result transmission setting failed Retry';
+													bERROR:=FALSE;
+													iStepCommands:=E_Commands.StatusResultTransmission;
+													CheckGeneralError();
+												ELSE
+													bERROR:=TRUE;
+													sERROR:='Automatic status result transmission setting failed';
+													iTemp:=0;
+													//trigger disconnection if error occured
+													IF bConnected THEN
+														bDisconnect:=TRUE;			
+													END_IF
+												END_IF
+											iTemp:=iTemp+1;
+	E_Commands.StatusResultFormatChangeAck:		//Failed result format setup - retry 3 times
+																		
+												IF iTemp<3 THEN
+													sERROR:='Result Format setup failed - Retry';
+													bERROR:=FALSE;
+													iStepCommands:=E_Commands.StatusResultFormatChange;
+												ELSE
+													bERROR:=TRUE;
+													sERROR:='Failed to set Result Format';
+													iTemp:=0;
+													
+													//trigger disconnection if error occured
+													IF bConnected THEN
+														bDisconnect:=TRUE;			
+													END_IF
+													
+												END_IF
+											iTemp:=iTemp+1;	
+	E_Commands.ClearWarningsAck:			//Failed clear warnings - retry 3 times	
+																			
+												IF iTemp<3 THEN
+													sERROR:='Clear Warning - Retry';
+													bERROR:=FALSE;
+													CheckGeneralError();
+													iStepCommands:=E_Commands.ClearWarnings;
+													
+												ELSE
+													bERROR:=TRUE;
+													sERROR:='Failed to clean warning';
+													iTemp:=0;
+													
+													//trigger disconnection if error occured
+												IF bConnected THEN
+													bDisconnect:=TRUE;			
+												END_IF
+													
+												END_IF
+												
+											iTemp:=iTemp+1;
+	E_Commands.CheckLoadedJobAck:			//Wrong answer for loaded job check - retry 3 times								
+												IF iTemp<3 THEN
+													sERROR:='Empty string received - Retry';
+													iStepCommands:=E_Commands.CheckLoadedJob;
+													CheckGeneralError();
+												ELSE
+													bERROR:=TRUE;
+													sERROR:='Failed to get job number - empty string received';
+													iTemp:=0;
+												END_IF
+											iTemp:=iTemp+1;				
+											//trigger disconnection if error occured
+											IF bConnected THEN
+												bDisconnect:=TRUE;			
+											END_IF
+											
+											
+	E_Commands.SensorStatusCheckAck: 		//Camera judgement takes to much time
+										IF iTemp<3 AND LEN(sStringFromReader)<7 THEN
+										  sERROR:='Sensor status messege is too short Retry';  
+										  iStepCommands:=E_Commands.SensorStatusCheck;	
+										ELSE
+											bERROR:=TRUE;
+											sERROR:=CONCAT(CONCAT(Concat('Camera Judgement waits too long, tried x times:',INT_TO_STRING(iTemp)),'Received message:'),sStringFromReader) ;
+											//trigger disconnection if error occured
+											IF bConnected THEN
+												bDisconnect:=TRUE;			
+											END_IF
+										END_IF										
+											iTemp:=iTemp+1;
+											
+											
+											
+	E_Commands.ReadResultAck:			//Result of the camera		
+											bReTriggerDueToMissingResultID:=FALSE;
+												//trigger disconnection if error occured
+											IF bConnected THEN
+												bDisconnect:=TRUE;			
+											END_IF
+
+																
+	E_Commands.CompareJobNumbers:			//compare loaded and runing programs
+										bERROR:=TRUE;
+												//trigger disconnection if error occured
+											IF bConnected THEN
+												bDisconnect:=TRUE;			
+											END_IF											
+											
+ELSE 													IF left(sStringFromReader,2)='ER' AND NOT bERRORStepTimeOut THEN
+															bError:=TRUE;
+															sERROR:=CONCAT('General error:',sStringFromReader);
+															iStepCommandsBeforeFailure:= iStepCommands;
+															iStepCommands:=E_Commands.FailureHandling;
+															IF bConnected THEN
+																bDisconnect:=TRUE;			
+															END_IF
+															
+														ELSIF bERRORStepTimeOut THEN
+															sStatus:='Failure handling';
+																//sERROR:='timeout';			
+															bERROR:=TRUE;	
+															bDisconnect:=TRUE;
+														END_IF
+END_CASE
+		
+//END_IF							
+
+
+
+IF bResetERROR THEN
+ 	bERROR:=FALSE;
+	iStepCommands:=E_Commands.WaitForStart ;
+END_IF
+
+	
+								]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="FailureHandlingTCPIP" Id="{6a8fb88a-a73f-4cdc-be9a-f67f7ac63e3b}">
+      <Implementation>
+        <ST><![CDATA[bReady:=FALSE;
+
+FB_SocketConnect.bExecute:=FALSE;
+FB_SocketReceive.bExecute:=FALSE;
+FB_SocketSend.bExecute:=FALSE;
+
+IF bConnected THEN
+FB_SocketClose.bExecute:=TRUE;
+bConnected:=FALSE;
+END_IF
+
+CASE iStepTCPIPBeforeFailure OF 
+
+10,20:			udintERRORCodeToBeTranslated:=FB_SocketConnect.nErrId;
+					IF  Beckhoff_ERROR_Code_Translator.bReady THEN
+					sERROR:=CONCAT('FB_SocketConnect ERROR:',Beckhoff_ERROR_Code_Translator.sTranslatedERRORCode);
+				END_IF
+
+40,50: 			udintERRORCodeToBeTranslated:=FB_SocketSend.nErrId;
+				IF  Beckhoff_ERROR_Code_Translator.bReady THEN
+					sERROR:=CONCAT('FB_SocketSend ERROR:',Beckhoff_ERROR_Code_Translator.sTranslatedERRORCode);
+				END_IF
+				
+60,70:			udintERRORCodeToBeTranslated:=FB_SocketReceive.nErrId;
+				IF  Beckhoff_ERROR_Code_Translator.bReady THEN
+					sERROR:=CONCAT('FB_SocketReceive ERROR:',Beckhoff_ERROR_Code_Translator.sTranslatedERRORCode);
+				END_IF
+80:				
+				sERROR:='more than 256 bytes received from the Camera';	
+				bERROR:=TRUE;
+				
+								
+90: 			sERROR:='No Data received from the Camera';
+				bERROR:=TRUE;
+	
+210,220:		udintERRORCodeToBeTranslated:=FB_SocketReceive.nErrId;
+				IF  Beckhoff_ERROR_Code_Translator.bReady THEN
+					sERROR:=CONCAT('FB_SocketClose ERROR:',Beckhoff_ERROR_Code_Translator.sTranslatedERRORCode);
+				END_IF	
+	ELSE	
+
+	IF NOT bERRORStepTimeOut2	THEN
+	
+		sStatus:='Failure handling';
+		sERROR:='TCP/IP communication unknown error';			
+		bERROR:=TRUE;
+		
+		ELSE	
+				
+		sStatus:='Failure handling';
+		//sERROR:='TCP/IP communication timeout';			
+		bERROR:=TRUE;
+		
+	END_IF	
+		
+END_CASE		
+	
+IF bResetERROR THEN
+ 	bERROR:=FALSE;
+	iStepTCPIP:=0;
+END_IF	]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="RingBufferCommands" Id="{9aab016a-c38d-4e0d-8a92-6eef42f9e1ae}">
+      <Implementation>
+        <ST><![CDATA[//----------------------------------------------------------------------------------------------
+IF iStepCommands<>aStepHistoryCommands[1] AND NOT bResetERROR THEN
+	aStepHistoryCommands[30]:=aStepHistoryCommands[29];
+	aStepHistoryCommands[29]:=aStepHistoryCommands[28];
+	aStepHistoryCommands[28]:=aStepHistoryCommands[27];
+	aStepHistoryCommands[27]:=aStepHistoryCommands[26];
+	aStepHistoryCommands[26]:=aStepHistoryCommands[25];
+	aStepHistoryCommands[25]:=aStepHistoryCommands[24];
+	aStepHistoryCommands[24]:=aStepHistoryCommands[23];
+	aStepHistoryCommands[23]:=aStepHistoryCommands[22];
+	aStepHistoryCommands[22]:=aStepHistoryCommands[21];
+	aStepHistoryCommands[21]:=aStepHistoryCommands[20];
+	aStepHistoryCommands[20]:=aStepHistoryCommands[19];
+	aStepHistoryCommands[19]:=aStepHistoryCommands[18];
+	aStepHistoryCommands[18]:=aStepHistoryCommands[17];
+	aStepHistoryCommands[17]:=aStepHistoryCommands[16];
+	aStepHistoryCommands[16]:=aStepHistoryCommands[15];
+	aStepHistoryCommands[15]:=aStepHistoryCommands[14];
+	aStepHistoryCommands[14]:=aStepHistoryCommands[13];
+	aStepHistoryCommands[13]:=aStepHistoryCommands[12];
+	aStepHistoryCommands[12]:=aStepHistoryCommands[11];
+	aStepHistoryCommands[11]:=aStepHistoryCommands[10];
+	aStepHistoryCommands[10]:=aStepHistoryCommands[9];
+	aStepHistoryCommands[9]:=aStepHistoryCommands[8];
+	aStepHistoryCommands[8]:=aStepHistoryCommands[7];
+	aStepHistoryCommands[7]:=aStepHistoryCommands[6];
+	aStepHistoryCommands[6]:=aStepHistoryCommands[5];
+	aStepHistoryCommands[5]:=aStepHistoryCommands[4];
+	aStepHistoryCommands[4]:=aStepHistoryCommands[3];
+	aStepHistoryCommands[3]:=aStepHistoryCommands[2];
+	aStepHistoryCommands[2]:=aStepHistoryCommands[1];
+	aStepHistoryCommands[1]:=iStepCommands;
+END_IF
+
+IF bResetERROR THEN
+	aStepHistoryCommands[30]:=0;
+	aStepHistoryCommands[29]:=0;
+	aStepHistoryCommands[28]:=0;
+	aStepHistoryCommands[27]:=0;
+	aStepHistoryCommands[26]:=0;
+	aStepHistoryCommands[25]:=0;
+	aStepHistoryCommands[24]:=0;
+	aStepHistoryCommands[23]:=0;
+	aStepHistoryCommands[22]:=0;
+	aStepHistoryCommands[21]:=0;
+	aStepHistoryCommands[20]:=0;
+	aStepHistoryCommands[19]:=0;
+	aStepHistoryCommands[18]:=0;
+	aStepHistoryCommands[17]:=0;
+	aStepHistoryCommands[16]:=0;
+	aStepHistoryCommands[15]:=0;
+	aStepHistoryCommands[14]:=0;
+	aStepHistoryCommands[13]:=0;
+	aStepHistoryCommands[12]:=0;
+	aStepHistoryCommands[11]:=0;
+	aStepHistoryCommands[10]:=0;
+	aStepHistoryCommands[9]:=0;
+	aStepHistoryCommands[8]:=0;
+	aStepHistoryCommands[7]:=0;
+	aStepHistoryCommands[6]:=0;
+	aStepHistoryCommands[5]:=0;
+	aStepHistoryCommands[4]:=0;
+	aStepHistoryCommands[3]:=0;
+	aStepHistoryCommands[2]:=0;
+	aStepHistoryCommands[1]:=0;
+	bResetDone:=TRUE;	
+END_IF]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="RingBufferTCPIP" Id="{b6f6c12f-269b-4899-9a1a-e4ab444ad58d}">
+      <Implementation>
+        <ST><![CDATA[IF iStepTCPIP<>aStepHistoryTCPIP[1] THEN
+	aStepHistoryTCPIP[50]:=aStepHistoryTCPIP[49];
+	aStepHistoryTCPIP[49]:=aStepHistoryTCPIP[48];
+	aStepHistoryTCPIP[48]:=aStepHistoryTCPIP[47];
+	aStepHistoryTCPIP[47]:=aStepHistoryTCPIP[46];
+	aStepHistoryTCPIP[46]:=aStepHistoryTCPIP[45];
+	aStepHistoryTCPIP[45]:=aStepHistoryTCPIP[44];
+	aStepHistoryTCPIP[44]:=aStepHistoryTCPIP[43];
+	aStepHistoryTCPIP[43]:=aStepHistoryTCPIP[42];
+	aStepHistoryTCPIP[42]:=aStepHistoryTCPIP[41];
+	aStepHistoryTCPIP[41]:=aStepHistoryTCPIP[40];
+	aStepHistoryTCPIP[40]:=aStepHistoryTCPIP[39];
+	aStepHistoryTCPIP[39]:=aStepHistoryTCPIP[38];
+	aStepHistoryTCPIP[38]:=aStepHistoryTCPIP[37];
+	aStepHistoryTCPIP[37]:=aStepHistoryTCPIP[36];
+	aStepHistoryTCPIP[36]:=aStepHistoryTCPIP[35];
+	aStepHistoryTCPIP[35]:=aStepHistoryTCPIP[34];
+	aStepHistoryTCPIP[34]:=aStepHistoryTCPIP[33];
+	aStepHistoryTCPIP[33]:=aStepHistoryTCPIP[32];
+	aStepHistoryTCPIP[32]:=aStepHistoryTCPIP[31];
+	aStepHistoryTCPIP[31]:=aStepHistoryTCPIP[30];
+	aStepHistoryTCPIP[30]:=aStepHistoryTCPIP[29];
+	aStepHistoryTCPIP[29]:=aStepHistoryTCPIP[28];
+	aStepHistoryTCPIP[28]:=aStepHistoryTCPIP[27];
+	aStepHistoryTCPIP[27]:=aStepHistoryTCPIP[26];
+	aStepHistoryTCPIP[26]:=aStepHistoryTCPIP[25];
+	aStepHistoryTCPIP[25]:=aStepHistoryTCPIP[24];
+	aStepHistoryTCPIP[24]:=aStepHistoryTCPIP[23];
+	aStepHistoryTCPIP[23]:=aStepHistoryTCPIP[22];
+	aStepHistoryTCPIP[22]:=aStepHistoryTCPIP[21];
+	aStepHistoryTCPIP[21]:=aStepHistoryTCPIP[20];
+	aStepHistoryTCPIP[20]:=aStepHistoryTCPIP[19];
+	aStepHistoryTCPIP[19]:=aStepHistoryTCPIP[18];
+	aStepHistoryTCPIP[18]:=aStepHistoryTCPIP[17];
+	aStepHistoryTCPIP[17]:=aStepHistoryTCPIP[16];
+	aStepHistoryTCPIP[16]:=aStepHistoryTCPIP[15];
+	aStepHistoryTCPIP[15]:=aStepHistoryTCPIP[14];
+	aStepHistoryTCPIP[14]:=aStepHistoryTCPIP[13];
+	aStepHistoryTCPIP[13]:=aStepHistoryTCPIP[12];
+	aStepHistoryTCPIP[12]:=aStepHistoryTCPIP[11];
+	aStepHistoryTCPIP[11]:=aStepHistoryTCPIP[10];
+	aStepHistoryTCPIP[10]:=aStepHistoryTCPIP[9];
+	aStepHistoryTCPIP[9]:=aStepHistoryTCPIP[8];
+	aStepHistoryTCPIP[8]:=aStepHistoryTCPIP[7];
+	aStepHistoryTCPIP[7]:=aStepHistoryTCPIP[6];
+	aStepHistoryTCPIP[6]:=aStepHistoryTCPIP[5];
+	aStepHistoryTCPIP[5]:=aStepHistoryTCPIP[4];
+	aStepHistoryTCPIP[4]:=aStepHistoryTCPIP[3];
+	aStepHistoryTCPIP[3]:=aStepHistoryTCPIP[2];
+	aStepHistoryTCPIP[2]:=aStepHistoryTCPIP[1];
+	aStepHistoryTCPIP[1]:=iStepTCPIP;
+END_IF]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="TimeoutStepSequenceCommands" Id="{d23cc779-0e15-4e20-8916-b4e7148ff575}">
+      <Implementation>
+        <ST><![CDATA[(* Measure the time of each step*)
+IF iStepCommands<>iStepArchiveCommands OR  NOT bEnable OR bDebugModeOn THEN				//start setp timer for timeout check
+	tonStepTimeOut.IN:=FALSE;
+	bStepRequest := FALSE; // Lépés történt, reseteljük a lépésengedélyt
+	iStepArchiveCommands:=iStepCommands;
+	
+ELSIF 	iStepCommands<>E_Commands.WaitForStart 			AND 
+		iStepCommands<>E_Commands.Trigger 				AND
+		iStepCommands<>E_Commands.CheckLoadedJob		AND
+		iStepCommands<>E_Commands.FailureHandling		AND
+		iStepCommands<>E_Commands.SensorStatusCheckAck		AND
+		bEnable							AND
+		NOT bERRORStepTimeOut 					
+									
+		THEN
+	tonStepTimeOut.IN:=TRUE;
+	
+END_IF	
+
+//generate error if time is up
+	IF tonStepTimeOut.Q AND NOT bERROR and not bERRORStepTimeOut THEN
+		iStepCommandsBeforeFailure:=iStepCommands;
+		bERRORStepTimeOut:=TRUE;
+		sError := CONCAT('Command Step sequence Timeout Step: ',INT_TO_STRING(iStepCommands));
+		iStepCommands:=E_Commands.FailureHandling;
+	END_IF	]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="TimeoutStepSequenceTCPIP" Id="{512e9fd0-922d-4ac3-ad32-f939295c2971}">
+      <Implementation>
+        <ST><![CDATA[(* Measure the TIME OF each step*)
+IF iStepTCPIP <>iStepArchiveTCPIP OR NOT bEnable OR bDebugModeOn THEN				//start setp timer for timeout check
+	tonStepTimeOut2.IN:=FALSE;
+	iStepArchiveTCPIP:=iStepTCPIP;
+	
+ELSIF 	iStepTCPIP<>0 									AND 
+		iStepTCPIP<>30									AND
+		iStepTCPIP<>1000								AND
+														NOT bERRORStepTimeOut2  AND 
+															bEnable 					THEN
+	tonStepTimeOut2.IN:=TRUE;
+END_IF	
+
+//generate error if time is up
+	IF tonStepTimeOut2.Q AND NOT bERROR AND NOT bERRORStepTimeOut2  THEN
+		iStepTCPIPBeforeFailure:=iStepTCPIP;
+		bERRORStepTimeOut2:=TRUE;
+		sError := CONCAT('TCP/IP Step sequence Timeout Step: ',INT_TO_STRING(iStepTCPIP));
+		iStepTCPIP:=1000; 
+	END_IF	]]></ST>
+      </Implementation>
+    </Action>
+  </POU>
+</TcPlcObject>

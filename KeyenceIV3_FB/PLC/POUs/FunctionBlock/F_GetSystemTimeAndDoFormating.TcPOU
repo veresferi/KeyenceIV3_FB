@@ -1,0 +1,49 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="F_GetSystemTimeAndDoFormating" Id="{1fa98953-198b-43bd-96f4-259473aa0fec}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_GetSystemTimeAndDoFormating : string(255)
+
+VAR_INPUT
+	
+stSystemTime :	TIMESTRUCT;
+
+END_VAR
+
+VAR
+
+	sYear : STRING(4);
+    sMonth : STRING(2);
+    sDay : STRING(2);
+    sHour : STRING(2);
+    sMinute : STRING(2);
+    sSecond : STRING(2);
+
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[
+
+// convert components to string with right lenght
+sYear:= RIGHT(TO_STRING(stSystemTime.wYear),2);
+sMonth:=TO_STRING(stSystemTime.wMonth);
+sDay:=TO_STRING(stSystemTime.wDay);
+sHour:=TO_STRING(stSystemTime.wHour);
+sMinute:=TO_STRING(stSystemTime.wMinute);
+sSecond:=TO_STRING(stSystemTime.wSecond);
+
+// create the output string
+F_GetSystemTimeAndDoFormating :=	CONCAT(CONCAT(sYear, ','), 
+                    				CONCAT(CONCAT(sMonth, ','), 
+                    				CONCAT(CONCAT(sDay, ','), 
+                    				CONCAT(CONCAT(sHour, ','), 
+                    				CONCAT(CONCAT(sMinute, ','), sSecond)))));
+
+				
+						]]></ST>
+    </Implementation>
+    <LineIds Name="F_GetSystemTimeAndDoFormating">
+      <LineId Id="3" Count="17" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

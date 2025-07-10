@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <DUT Name="E_Commands" Id="{8491b8c4-292e-4420-ac44-89ae1e4b55d9}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+{attribute 'strict'}
+TYPE E_Commands :
+(
+	WaitForStart:=0,
+	ReadError,
+	ReadErrorAck,
+	ReadOpMode,
+	ReadOpModeAck,
+	TimeSync,
+	TimeSyncAck,
+	StatusResultTransmission,
+	StatusResultTransmissionAck,
+	StatusResultFormatChange,
+	StatusResultFormatChangeAck,
+	ClearWarnings,
+	ClearWarningsAck,
+	CheckLoadedJob,
+	CheckLoadedJobAck,
+	CompareJobNumbers,
+	LoadJob,
+	LoadJobAck,
+	Trigger,
+	TriggerAck,
+	SensorStatusCheck,
+	SensorStatusCheckAck,
+	ReadResult,
+	ReadResultAck,
+	FailureHandling:=1000
+)
+;
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

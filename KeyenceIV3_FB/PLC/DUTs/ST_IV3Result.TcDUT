@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <DUT Name="ST_IV3Result" Id="{395dc846-f049-448e-8aef-6ea750d7b317}">
+    <Declaration><![CDATA[TYPE ST_IV3Result :
+STRUCT
+	aToolResult :ARRAY [0..64] OF ST_ToolResult ;		//result of the individual jobs/tools
+	ResultID : UINT;						// uniq ID of status result messages
+	MainResult :STRING(2);					//OK, NG, --:Status not possible
+	CommandAck :STRING(255);				//Return answer type
+	sReceivedString : T_MaxString;			//store the raw result messsage
+END_STRUCT
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="FB_Visu" Id="{1449b0d4-9f9a-4cc0-a1b8-c4105355c162}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Visu
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[visu.visuReceivedString:=MAIN.IV3.sStringFromReader;
+visu.visuStingToBeSent:=MAIN.IV3.sStringToBeSend;
+Visu.visuStatus:=MAIN.IV3.sStatus;
+
+visu.visuError:=MAIN.IV3.bERROR;
+Visu.visuStatusCommand:=main.IV3.sStatusCommand;
+visu.visuStatusTCPIP:=main.IV3.sStatusTCPIP;
+visu.visuStepCommand:=main.IV3.iStepCommands;
+visu.visuStepTCPIP:=main.IV3.iStepTCPIP;
+visu.visuTRigger:=main.btrigger;
+
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

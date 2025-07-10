@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="F_CreateStringForCameraProgramNumber" Id="{ed3d8e16-360a-40eb-8444-acaf4f9cca61}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_CreateStringForCameraProgramNumber : String(10)
+VAR_INPUT
+	iProgramNumber: UINT;
+END_VAR
+VAR
+	sProgramNumber :STRING(3); //camera number with zeros
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Nullákkal kiegészítés 3 karakterre
+IF iProgramNumber < 10 THEN
+    sProgramNumber := CONCAT('00', TO_STRING(iProgramNumber));
+ELSIF iProgramNumber < 100 THEN
+    sProgramNumber := CONCAT('0', TO_STRING(iProgramNumber));
+ELSE
+    sProgramNumber := TO_STRING(iProgramNumber);
+END_IF
+
+// Végső string összeállítása
+F_CreateStringForCameraProgramNumber := CONCAT(CONCAT('PW,', sProgramNumber), '$0D');]]></ST>
+    </Implementation>
+    <LineIds Name="F_CreateStringForCameraProgramNumber">
+      <LineId Id="3" Count="9" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>
