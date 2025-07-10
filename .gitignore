@@ -1,6 +1,7 @@
 ### TwinCAT3 ###
 # website: https://www.beckhoff.com/twincat3/
 
+*project.~u
 # TwinCAT PLC
 *.plcproj.bak
 *.plcproj.orig
