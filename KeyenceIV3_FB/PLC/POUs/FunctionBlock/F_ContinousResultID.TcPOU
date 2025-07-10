@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="F_ContinousResultID" Id="{e84588e8-e050-4cd8-a74f-8b3ee022c90c}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_ContinousResultID : bool
+VAR_INPUT
+	nCurrentResultID :UINT;
+	nPreviousResultID: UINT;
+	END_VAR
+VAR
+	bIsContinuous : BOOL; 
+
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF nPreviousResultID = 32767 THEN
+    // Ha az előző ID 32767, akkor a következőnek 0-nak kell lennie
+    bIsContinuous := (nCurrentResultID = 0);
+ELSE
+    // Általános eset: az aktuális ID az előző + 1 legyen
+    bIsContinuous := (nCurrentResultID = nPreviousResultID + 1);
+END_IF
+
+F_ContinousResultID:= bIsContinuous;]]></ST>
+    </Implementation>
+    <LineIds Name="F_ContinousResultID">
+      <LineId Id="3" Count="7" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

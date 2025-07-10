@@ -1,0 +1,64 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="F_ResultStructure" Id="{21ae126f-06ed-42a8-8559-5f5be3f4accc}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_ResultStructure : ST_IV3Result
+VAR_INPUT
+	sReceivedString :T_MaxString;			// received string from Rx Buffer
+END_VAR
+VAR
+aSplit :ARRAY[1..255] OF STRING(255);
+bResultSplit :BOOL;
+i,j : UDINT;
+iToolIndex: UDINT;
+iCounter : INT;
+stResult : ST_IV3Result;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[aSplit[1] :=sReceivedString;
+FOR i:=1 TO 25 DO
+	bResultSplit:=FindAndSplitChar(
+									sSeparatorChar:=',' , 
+									pSrcString:=ADR(aSplit[i]), 
+									pLeftString:=ADR(aSplit[i]), 
+									nLeftSize:=SIZEOF(aSplit[i]), 
+									pRightString:=ADR(aSplit[i+1]), 
+									nRightSize:=SIZEOF(aSplit[i+1]), 
+									bSearchFromRight:= FALSE );							
+		IF NOT bResultSplit THEN 
+			EXIT;
+		END_IF	
+END_FOR
+
+// set header values
+stResult.CommandAck:=aSplit[1];
+stResult.ResultID:=STRING_TO_UINT(aSplit[2]);
+stResult.MainResult:=aSplit[3];
+
+iToolIndex:=0; // Tool result array index
+FOR i:= 4 TO 253 BY 3 DO
+				
+	IF aSplit[i] ='' OR aSplit[i+1] ='' OR aSplit[i+2]='' THEN		// check if the last 3 part have data
+		EXIT;
+	END_IF	
+		
+		
+				stResult.aToolResult[iToolIndex].nToolNumber:=STRING_TO_USINT(aSplit[i]);
+				stResult.aToolResult[iToolIndex].sToolStatus:=aSplit[i+1];
+				stResult.aToolResult[iToolIndex].sMatchingRate :=aSplit[i+2];
+				iToolIndex:= iToolIndex+1;
+	
+		//maximum 65 tool from 00
+	IF iToolIndex >65 THEN
+		EXIT;
+	END_IF
+		
+END_FOR
+
+
+
+
+F_ResultStructure:=stResult;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

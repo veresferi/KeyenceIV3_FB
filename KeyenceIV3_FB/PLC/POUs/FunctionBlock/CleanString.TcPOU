@@ -1,0 +1,53 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="CleanString" Id="{07f3e1b4-01c5-441f-9072-10f0fccfbede}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION CleanString : T_MaxString
+VAR_INPUT
+    sInput : STRING(255);	// A bemeneti string
+END_VAR
+VAR
+
+iInput: INT;
+iRemove: INT;
+cInput: STRING(1);
+cRemove: STRING(1);
+bSkip: BOOL;
+sResult: STRING(255);
+sCharsToRemove : STRING(10); // Fixen definiált törlendő karakterek
+    
+
+
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Alapértelmezett törlendő karakterek: CR, LF, NULL
+sCharsToRemove := CONCAT(CONCAT(CHR(13), CHR(10)), CHR(0));
+
+sResult := '';
+
+FOR iInput := 1 TO LEN(sInput) DO
+    cInput := MID(sInput, 1, iInput);
+    bSkip := FALSE;
+
+    // Ellenőrizzük, hogy a karakter szerepel-e a törlendő listában
+    FOR iRemove := 1 TO LEN(sCharsToRemove) DO
+        cRemove := MID(sCharsToRemove, 1, iRemove);
+        IF cInput = cRemove THEN
+            bSkip := TRUE;
+            EXIT;
+        END_IF
+    END_FOR;
+
+    IF NOT bSkip THEN
+        sResult := CONCAT(sResult, cInput);
+    END_IF
+END_FOR;
+
+// Szóközök eltávolítása a két végéről
+sResult := F_LTrim(F_RTrim(sResult));
+
+CleanString := sResult;
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

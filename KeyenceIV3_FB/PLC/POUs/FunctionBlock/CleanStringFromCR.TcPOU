@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="CleanStringFromCR" Id="{68be3a35-6310-4cc0-b4a7-fc398928ceaa}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION CleanStringFromCR :T_MaxString
+VAR_INPUT
+	sStringFromReader : STRING(255); // Az eredeti string
+END_VAR
+VAR	
+    sTemp:STRING(255);
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Eltávolítjuk a CR (0x0D), LF (0x0A) és NULL (0x00) karaktereket
+sTemp := REPLACE(sStringFromReader, CHR(13), ''); // CR
+sTemp := REPLACE(sTemp, CHR(10), '');	// LF
+sTemp := REPLACE(sTemp, CHR(0), '');	// NULL (ha előfordulna)
+sTemp := TRIM(sTemp);			// Szóközök eltávolítása
+CleanStringFromCR := sTemp;
+
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

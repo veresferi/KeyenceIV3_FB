@@ -1,0 +1,51 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="MAIN" Id="{89022072-8845-4a7b-adf2-e74a3ffe04d7}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+	
+IV3 :Keyence_IV3;		// instance of the Keyenece Camera FB
+
+
+bEnableCamera : BOOL;	//Enable Keyence IV3 
+iProgramNumber : UINT;		// Camera program number
+
+
+stResult: ST_IV3Result;
+bBool: BOOL;
+btrigger:BOOL;
+bReady:BOOL;
+
+fbVisu: FB_Visu;
+bcheck:BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IV3(
+	bEnable:=bBool, 
+	bTrigger:= btrigger, 
+	sCameraIP:='127.0.0.1' , 
+	iCameraPort:= 8500, 
+	iTimeOut:=6000 , 
+	bResetERROR:=, 
+	iProgramNumber:= iProgramNumber, 
+	bReady=> bReady, 
+	bERROR=> , 
+	sERROR=> , 
+	sStatus=> , 
+	sReadingTime=> , 
+	iActiveProgramNumber=> , 
+	bOperationStatus=>,
+	stResult=>stResult,
+	bFinished=> ,  );
+	
+(*IF bReady THEN	
+btrigger:=TRUE;
+ELSE 
+btrigger:=FALSE;	
+END_IF*)
+
+fbVisu();]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

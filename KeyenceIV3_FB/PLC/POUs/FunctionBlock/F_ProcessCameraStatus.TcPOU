@@ -1,0 +1,57 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.14">
+  <POU Name="F_ProcessCameraStatus" Id="{16fa4a03-5e08-4d67-b409-0ea88aae2844}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION F_ProcessCameraStatus : ST_CamStatus
+VAR_INPUT
+    sStringFromReader : STRING(255);
+END_VAR
+VAR
+    aSplit : ARRAY[1..10] OF STRING(10);
+    sTemp : STRING(255);
+    i : INT;
+    bSplit : BOOL;
+    stCameraStatus : ST_CamStatus;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Ellenőrizzük, hogy az üzenet 'SR,'-rel kezdődik
+IF LEFT(sStringFromReader, 3) = 'SR,' THEN
+    stCameraStatus.sStatusMessage := sStringFromReader;
+
+    // Eltávolítjuk az 'SR,' prefixet
+    sTemp := MID(sStringFromReader,LEN(sStringFromReader) - 3,4);
+
+    // Első elem a teljes string
+    aSplit[1] := STemp;
+
+    // Szétválasztás vessző mentén
+    FOR i := 1 TO 8 DO
+        bSplit := FindAndSplitChar(
+            sSeparatorChar := ',',
+            pSrcString := ADR(sTemp),
+            nLeftSize := SIZEOF(aSplit[i]),
+            pLeftString := ADR(aSplit[i]),
+            nRightSize := SIZEOF(sTemp),
+            pRightString := ADR(sTemp),
+            bSearchFromRight := FALSE
+        );
+        IF NOT bSplit THEN
+            EXIT;
+        END_IF
+    END_FOR
+	aSplit[7] := sTemp; // az utolsó érték, ami már nem tartalmaz vesszőt
+    // Értékek hozzárendelése a struktúrához
+    stCameraStatus.a := STRING_TO_BYTE(aSplit[1]);
+    stCameraStatus.b := STRING_TO_BYTE(aSplit[2]);
+    stCameraStatus.c := STRING_TO_BYTE(aSplit[3]);
+    stCameraStatus.d := STRING_TO_BYTE(aSplit[4]);
+    stCameraStatus.e := STRING_TO_BYTE(aSplit[5]);
+    stCameraStatus.f := STRING_TO_BYTE(aSplit[6]);
+    stCameraStatus.g := STRING_TO_BYTE(aSplit[7]);
+END_IF
+
+F_ProcessCameraStatus := stCameraStatus;
+
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
