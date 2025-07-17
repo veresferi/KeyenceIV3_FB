@@ -1,7 +1,7 @@
 ### TwinCAT3 ###
 # website: https://www.beckhoff.com/twincat3/
 
-*project.~u
+
 # TwinCAT PLC
 *.plcproj.bak
 *.plcproj.orig
@@ -31,6 +31,7 @@ LineIDs.dbg.bak
 *.xtv
 *.xtv.bak
 *.xtv.bk?
+*.project.~u
 
 # Multiuser specific
 **/.TcGit/
